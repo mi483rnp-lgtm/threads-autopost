@@ -1,0 +1,34 @@
+name: threads-autopost
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: autopost
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Tokyo
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run autopost
+        env:
+          THREADS_TOKEN: ${{ secrets.THREADS_TOKEN }}
+        run: python3 threads_autopost_cloud.py
+      - name: Commit queue changes
+        run: |
+          git config user.name "autopost-bot"
+          git config user.email "autopost@noreply.local"
+          if ! git diff --quiet queue.json; then
+            git add queue.json
+            git commit -m "update queue status"
+            git pull --rebase
+            git push
+          fi
