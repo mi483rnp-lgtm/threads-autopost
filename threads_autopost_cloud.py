@@ -16,7 +16,7 @@ USER_ID = "28532249756364073"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 QUEUE_PATH = os.path.join(BASE_DIR, "queue.json")
 API = "https://graph.threads.net/v1.0"
-GRACE_MINUTES = 45
+GRACE_MINUTES = 180  # scheduleの間引き対策。予約時刻から3時間以内の実行なら投稿する（深夜投稿は防ぐ）
 
 
 def log(msg):
