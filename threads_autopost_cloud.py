@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """Threads自動投稿（クラウド版・GitHub Actions用）
-- トークンは環境変数 THREADS_TOKEN から読む
-- queue.json の予約時刻が来た投稿を投稿し、結果をqueue.jsonに書き戻す
-- タイムゾーンはワークフロー側で TZ=Asia/Tokyo を設定
+
+設計方針（2026-07-22改訂）:
+GitHub Actionsのscheduleは1日数回しか動かないことがあるため、
+「予約時刻ちょうどに実行されること」を前提にしない。
+- 予約時刻を過ぎていて、かつ投稿可能な時間帯(7:00-22:00)なら投稿する
+- 時間帯外なら pending のまま持ち越す（捨てない）
+- 24時間以上過ぎたものだけ諦めて missed にする
+- 1回の実行で投稿するのは1件だけ（溜まっていても連投しない）
 """
 import json
 import os
@@ -16,7 +21,10 @@ USER_ID = "28532249756364073"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 QUEUE_PATH = os.path.join(BASE_DIR, "queue.json")
 API = "https://graph.threads.net/v1.0"
-GRACE_MINUTES = 180  # scheduleの間引き対策。予約時刻から3時間以内の実行なら投稿する（深夜投稿は防ぐ）
+
+POST_WINDOW_START = 7   # この時刻以降なら投稿してよい
+POST_WINDOW_END = 22    # この時刻未満なら投稿してよい（深夜投稿を防ぐ）
+MAX_AGE_HOURS = 24      # 予約からこれ以上過ぎたら諦める
 
 
 def log(msg):
@@ -56,18 +64,23 @@ def main():
         queue = json.load(f)
     now = datetime.now()
     changed = False
+    in_window = POST_WINDOW_START <= now.hour < POST_WINDOW_END
 
     for item in queue:
         if item.get("status") != "pending":
             continue
         sched = datetime.strptime(item["time"], "%Y-%m-%d %H:%M")
         if sched > now:
-            continue
-        if now - sched > timedelta(minutes=GRACE_MINUTES):
+            continue  # まだ時刻前
+        if now - sched > timedelta(hours=MAX_AGE_HOURS):
             item["status"] = "missed"
             changed = True
-            log(f"MISSED: {item['id']} scheduled {item['time']}")
+            log(f"MISSED (over {MAX_AGE_HOURS}h): {item['id']}")
             continue
+        if not in_window:
+            log(f"HOLD (outside {POST_WINDOW_START}-{POST_WINDOW_END}h): {item['id']}")
+            continue  # 時間帯外。pendingのまま次の実行に持ち越す
+        # 投稿実行（1回の実行で1件だけ）
         try:
             posted_ids = []
             reply_to = None
@@ -86,6 +99,7 @@ def main():
             item["error"] = str(e)
             log(f"FAILED {item['id']}: {e}")
         changed = True
+        break  # 1回の実行で1件のみ
 
     if changed:
         with open(QUEUE_PATH, "w") as f:

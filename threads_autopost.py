@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""Threads自動投稿スクリプト
-- queue.json の予約時刻が来た投稿をThreads APIで自動投稿する
-- ツリー投稿対応（posts配列の2つ目以降は前のポストへの返信として投稿）
-- 長期トークンの自動リフレッシュ（7日ごと）
-- launchdから5分おきに起動される想定
+"""Threads自動投稿（ローカル版・Mac launchd用）
+
+クラウド(GitHub Actions)は1日数回しか動かないことがあるため、
+Macが起きているときはこちらが正確な時刻(5分以内)に投稿する二重化の役割。
+
+- 実行のたびに git pull して最新の状態を取得（クラウドが投稿済みなら何もしない）
+- 予約時刻を過ぎていて、投稿可能な時間帯(7:00-22:00)なら投稿
+- 投稿したら git push してクラウドと状態を同期
+- 1回の実行で1件だけ
+- ついでにトークンの期限更新も行う（7日ごと）
 """
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -17,25 +23,26 @@ CONFIG_PATH = os.path.expanduser("~/.config/threads-autopost/config.json")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 QUEUE_PATH = os.path.join(BASE_DIR, "queue.json")
 LOG_PATH = os.path.join(BASE_DIR, "log.txt")
+GH = os.path.expanduser("~/bin/gh")
+REPO = "mi483rnp-lgtm/threads-autopost"
 API = "https://graph.threads.net/v1.0"
-GRACE_MINUTES = 45  # 予約時刻からこれ以上遅れていたら投稿せず missed にする
+
+POST_WINDOW_START = 7
+POST_WINDOW_END = 22
+MAX_AGE_HOURS = 24
 
 
 def log(msg):
-    line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+    line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [local] {msg}"
     with open(LOG_PATH, "a") as f:
         f.write(line + "\n")
     print(line)
 
 
-def load_json(path):
-    with open(path) as f:
-        return json.load(f)
-
-
-def save_json(path, data):
-    with open(path, "w") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+def git(*args):
+    return subprocess.run(
+        ["git"] + list(args), cwd=BASE_DIR, capture_output=True, text=True, timeout=60
+    )
 
 
 def api_call(url, params, method="POST"):
@@ -61,41 +68,51 @@ def refresh_token_if_needed(config):
         if "access_token" in res:
             config["access_token"] = res["access_token"]
             config["token_last_refreshed"] = date.today().isoformat()
-            save_json(CONFIG_PATH, config)
-            log("token refreshed OK")
+            with open(CONFIG_PATH, "w") as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+            log("token refreshed")
+            p = subprocess.run(
+                [GH, "secret", "set", "THREADS_TOKEN", "-R", REPO],
+                input=config["access_token"].encode(),
+                capture_output=True,
+            )
+            log("GitHub secret updated" if p.returncode == 0 else "secret update failed")
     except Exception as e:
-        log(f"token refresh FAILED: {e}")
+        log(f"token refresh failed: {e}")
     return config
 
 
-def publish_post(config, text, reply_to_id=None):
-    """コンテナ作成→公開。公開されたメディアIDを返す"""
-    params = {
-        "media_type": "TEXT",
-        "text": text,
-        "access_token": config["access_token"],
-    }
+def publish_post(token, text, reply_to_id=None):
+    params = {"media_type": "TEXT", "text": text, "access_token": token}
     if reply_to_id:
         params["reply_to_id"] = reply_to_id
-    container = api_call(f"{API}/{config['user_id']}/threads", params)
-    creation_id = container["id"]
+    container = api_call(f"{API}/{USER_ID_HOLDER['id']}/threads", params)
     time.sleep(3)
     published = api_call(
-        f"{API}/{config['user_id']}/threads_publish",
-        {"creation_id": creation_id, "access_token": config["access_token"]},
+        f"{API}/{USER_ID_HOLDER['id']}/threads_publish",
+        {"creation_id": container["id"], "access_token": token},
     )
     return published["id"]
 
 
-def main():
-    config = load_json(CONFIG_PATH)
-    config = refresh_token_if_needed(config)
+USER_ID_HOLDER = {"id": None}
 
-    if not os.path.exists(QUEUE_PATH):
-        log("queue.json not found — nothing to do")
-        return
-    queue = load_json(QUEUE_PATH)
+
+def main():
+    with open(CONFIG_PATH) as f:
+        config = json.load(f)
+    USER_ID_HOLDER["id"] = config["user_id"]
+    config = refresh_token_if_needed(config)
+    token = config["access_token"]
+
+    # クラウド側の最新状態を取り込む（重複投稿の防止）
+    git("fetch", "-q", "origin")
+    git("reset", "-q", "--hard", "origin/main")
+
+    with open(QUEUE_PATH) as f:
+        queue = json.load(f)
     now = datetime.now()
+    in_window = POST_WINDOW_START <= now.hour < POST_WINDOW_END
     changed = False
 
     for item in queue:
@@ -104,17 +121,18 @@ def main():
         sched = datetime.strptime(item["time"], "%Y-%m-%d %H:%M")
         if sched > now:
             continue
-        if now - sched > timedelta(minutes=GRACE_MINUTES):
+        if now - sched > timedelta(hours=MAX_AGE_HOURS):
             item["status"] = "missed"
             changed = True
-            log(f"MISSED (too late): {item['id']} scheduled {item['time']}")
+            log(f"MISSED (over {MAX_AGE_HOURS}h): {item['id']}")
             continue
-        # 投稿実行
+        if not in_window:
+            continue
         try:
             posted_ids = []
             reply_to = None
             for i, text in enumerate(item["posts"]):
-                media_id = publish_post(config, text, reply_to_id=reply_to)
+                media_id = publish_post(token, text, reply_to_id=reply_to)
                 posted_ids.append(media_id)
                 reply_to = media_id
                 log(f"posted {item['id']} part {i+1}/{len(item['posts'])} -> {media_id}")
@@ -128,9 +146,15 @@ def main():
             item["error"] = str(e)
             log(f"FAILED {item['id']}: {e}")
         changed = True
+        break
 
     if changed:
-        save_json(QUEUE_PATH, queue)
+        with open(QUEUE_PATH, "w") as f:
+            json.dump(queue, f, ensure_ascii=False, indent=2)
+        git("add", "queue.json")
+        git("commit", "-q", "-m", "update queue status (local)")
+        p = git("push", "-q")
+        log("pushed to cloud" if p.returncode == 0 else f"push failed: {p.stderr[:120]}")
 
 
 if __name__ == "__main__":
