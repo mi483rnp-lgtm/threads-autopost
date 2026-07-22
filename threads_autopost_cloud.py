@@ -80,7 +80,6 @@ def main():
         if not in_window:
             log(f"HOLD (outside {POST_WINDOW_START}-{POST_WINDOW_END}h): {item['id']}")
             continue  # 時間帯外。pendingのまま次の実行に持ち越す
-        # 投稿実行（1回の実行で1件だけ）
         try:
             posted_ids = []
             reply_to = None

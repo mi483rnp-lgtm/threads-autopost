@@ -1,14 +1,6 @@
 # Threads自動投稿システム
 
-**クラウド実行（GitHub Actions）で稼働中。Macが眠っていても投稿される。**
-
-- リポジトリ: https://github.com/mi483rnp-lgtm/threads-autopost （非公開）
-- GitHubのサーバーが**10分おき**に queue.json をチェックして、時間が来た投稿を自動投稿
-- 投稿の追加: queue.json を編集して `git push`（Claudeに「これ予約して」と言えばやってくれる）
-- トークン: GitHub Secretsに保管。ローカルのlaunchdが12時間おきに起動し、7日経過していたらトークンを更新してSecretにも反映（Macが週1回でも起きていればOK）
-- 実行履歴: https://github.com/mi483rnp-lgtm/threads-autopost/actions
-
-※以下はローカル版（旧構成）の説明。現在ローカルのlaunchdは投稿ではなくトークン更新のみを担当。
+Buffer不要の完全自動投稿。queue.json に予約を書いておくと、Macが起きていれば5分おきのチェックで自動投稿される。
 
 ## 仕組み
 

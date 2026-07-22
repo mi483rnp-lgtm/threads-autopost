@@ -4,11 +4,11 @@
 クラウド(GitHub Actions)は1日数回しか動かないことがあるため、
 Macが起きているときはこちらが正確な時刻(5分以内)に投稿する二重化の役割。
 
-- 実行のたびに git pull して最新の状態を取得（クラウドが投稿済みなら何もしない）
-- 予約時刻を過ぎていて、投稿可能な時間帯(7:00-22:00)なら投稿
-- 投稿したら git push してクラウドと状態を同期
-- 1回の実行で1件だけ
-- ついでにトークンの期限更新も行う（7日ごと）
+安全設計:
+- リポジトリ全体を書き換える操作（reset --hard 等）は絶対に行わない
+- 同期するのは queue.json 1ファイルのみ
+- 1回の実行で1件だけ投稿
+- 投稿可能な時間帯(7:00-22:00)のみ投稿。時間外は持ち越し
 """
 import json
 import os
@@ -43,6 +43,12 @@ def git(*args):
     return subprocess.run(
         ["git"] + list(args), cwd=BASE_DIR, capture_output=True, text=True, timeout=60
     )
+
+
+def sync_queue_from_cloud():
+    """queue.json だけをリモートの最新に合わせる（他のファイルには触れない）"""
+    git("fetch", "-q", "origin", "main")
+    git("checkout", "origin/main", "--", "queue.json")
 
 
 def api_call(url, params, method="POST"):
@@ -82,32 +88,29 @@ def refresh_token_if_needed(config):
     return config
 
 
-def publish_post(token, text, reply_to_id=None):
-    params = {"media_type": "TEXT", "text": text, "access_token": token}
+def publish_post(config, text, reply_to_id=None):
+    params = {
+        "media_type": "TEXT",
+        "text": text,
+        "access_token": config["access_token"],
+    }
     if reply_to_id:
         params["reply_to_id"] = reply_to_id
-    container = api_call(f"{API}/{USER_ID_HOLDER['id']}/threads", params)
+    container = api_call(f"{API}/{config['user_id']}/threads", params)
     time.sleep(3)
     published = api_call(
-        f"{API}/{USER_ID_HOLDER['id']}/threads_publish",
-        {"creation_id": container["id"], "access_token": token},
+        f"{API}/{config['user_id']}/threads_publish",
+        {"creation_id": container["id"], "access_token": config["access_token"]},
     )
     return published["id"]
-
-
-USER_ID_HOLDER = {"id": None}
 
 
 def main():
     with open(CONFIG_PATH) as f:
         config = json.load(f)
-    USER_ID_HOLDER["id"] = config["user_id"]
     config = refresh_token_if_needed(config)
-    token = config["access_token"]
 
-    # クラウド側の最新状態を取り込む（重複投稿の防止）
-    git("fetch", "-q", "origin")
-    git("reset", "-q", "--hard", "origin/main")
+    sync_queue_from_cloud()
 
     with open(QUEUE_PATH) as f:
         queue = json.load(f)
@@ -132,7 +135,7 @@ def main():
             posted_ids = []
             reply_to = None
             for i, text in enumerate(item["posts"]):
-                media_id = publish_post(token, text, reply_to_id=reply_to)
+                media_id = publish_post(config, text, reply_to_id=reply_to)
                 posted_ids.append(media_id)
                 reply_to = media_id
                 log(f"posted {item['id']} part {i+1}/{len(item['posts'])} -> {media_id}")
@@ -154,7 +157,10 @@ def main():
         git("add", "queue.json")
         git("commit", "-q", "-m", "update queue status (local)")
         p = git("push", "-q")
-        log("pushed to cloud" if p.returncode == 0 else f"push failed: {p.stderr[:120]}")
+        if p.returncode != 0:
+            git("pull", "--rebase", "-q")
+            p = git("push", "-q")
+        log("synced to cloud" if p.returncode == 0 else f"push failed: {p.stderr[:120]}")
 
 
 if __name__ == "__main__":
