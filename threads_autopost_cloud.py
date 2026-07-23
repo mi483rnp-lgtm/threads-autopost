@@ -54,6 +54,24 @@ def publish_post(token, text, reply_to_id=None):
     return published["id"]
 
 
+def already_posted_recently(token, first_text):
+    """直近の自分の投稿に、これから出す本文の1ポスト目と一致するものがあれば True。
+    二重投稿の最終防波堤（並行実行やリトライで同じ内容が2度出るのを防ぐ）。"""
+    try:
+        res = api_call(
+            f"{API}/{USER_ID}/threads",
+            {"fields": "text", "limit": "10", "access_token": token},
+            method="GET",
+        )
+        head = first_text.strip()[:40]
+        for post in res.get("data", []):
+            if (post.get("text") or "").strip()[:40] == head:
+                return True
+    except Exception as e:
+        log(f"idempotency check failed (continuing): {e}")
+    return False
+
+
 def main():
     token = os.environ.get("THREADS_TOKEN")
     if not token:
@@ -80,6 +98,14 @@ def main():
         if not in_window:
             log(f"HOLD (outside {POST_WINDOW_START}-{POST_WINDOW_END}h): {item['id']}")
             continue  # 時間帯外。pendingのまま次の実行に持ち越す
+        # 二重投稿の最終防波堤: 既に同内容が投稿済みなら投稿せずpostedにする
+        if already_posted_recently(token, item["posts"][0]):
+            item["status"] = "posted"
+            item["posted_at"] = now.strftime("%Y-%m-%d %H:%M")
+            item["note_dup"] = "skipped: already on timeline"
+            changed = True
+            log(f"SKIP (already posted): {item['id']}")
+            break
         try:
             posted_ids = []
             reply_to = None
