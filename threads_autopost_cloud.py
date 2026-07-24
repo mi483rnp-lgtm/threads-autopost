@@ -23,8 +23,8 @@ QUEUE_PATH = os.path.join(BASE_DIR, "queue.json")
 API = "https://graph.threads.net/v1.0"
 
 POST_WINDOW_START = 7   # この時刻以降なら投稿してよい
-POST_WINDOW_END = 22    # この時刻未満なら投稿してよい（深夜投稿を防ぐ）
-MAX_AGE_HOURS = 24      # 予約からこれ以上過ぎたら諦める
+POST_WINDOW_END = 23    # この時刻未満なら投稿してよい（深夜投稿を防ぐ）
+MAX_AGE_HOURS = 20      # 予約からこれ以上過ぎたら諦める（翌日の同枠にかぶせない）
 
 
 def log(msg):
