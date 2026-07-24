@@ -105,6 +105,23 @@ def publish_post(config, text, reply_to_id=None):
     return published["id"]
 
 
+def already_posted_recently(config, first_text):
+    """既に同内容がタイムラインにあれば True（二重投稿の最終防波堤）"""
+    try:
+        res = api_call(
+            f"{API}/{config['user_id']}/threads",
+            {"fields": "text", "limit": "10", "access_token": config["access_token"]},
+            method="GET",
+        )
+        head = first_text.strip()[:40]
+        for post in res.get("data", []):
+            if (post.get("text") or "").strip()[:40] == head:
+                return True
+    except Exception as e:
+        log(f"idempotency check failed (continuing): {e}")
+    return False
+
+
 def main():
     with open(CONFIG_PATH) as f:
         config = json.load(f)
@@ -131,6 +148,13 @@ def main():
             continue
         if not in_window:
             continue
+        if already_posted_recently(config, item["posts"][0]):
+            item["status"] = "posted"
+            item["posted_at"] = now.strftime("%Y-%m-%d %H:%M")
+            item["note_dup"] = "skipped: already on timeline"
+            changed = True
+            log(f"SKIP (already posted): {item['id']}")
+            break
         try:
             posted_ids = []
             reply_to = None
