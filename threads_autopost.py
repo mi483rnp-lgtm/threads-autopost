@@ -97,12 +97,20 @@ def publish_post(config, text, reply_to_id=None):
     if reply_to_id:
         params["reply_to_id"] = reply_to_id
     container = api_call(f"{API}/{config['user_id']}/threads", params)
-    time.sleep(3)
-    published = api_call(
-        f"{API}/{config['user_id']}/threads_publish",
-        {"creation_id": container["id"], "access_token": config["access_token"]},
-    )
-    return published["id"]
+    # コンテナ準備待ち。短いと公開が失敗するので長めに取り、失敗したらリトライ
+    last_err = None
+    for attempt in range(4):
+        time.sleep(7)
+        try:
+            published = api_call(
+                f"{API}/{config['user_id']}/threads_publish",
+                {"creation_id": container["id"], "access_token": config["access_token"]},
+            )
+            return published["id"]
+        except Exception as e:
+            last_err = e
+            log(f"publish retry {attempt+1}/4: {e}")
+    raise last_err
 
 
 def already_posted_recently(config, first_text):
