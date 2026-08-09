@@ -156,9 +156,7 @@ def main():
             continue
         if not in_window:
             continue
-        # ツリー（複数ポスト）は自動で出さない（途中で切れる事故を防ぐ）。手動で出す運用。
-        if len(item.get("posts", [])) > 1:
-            continue
+        # ツリーも自動投稿する（本人指示 2026-08-09。publishは7秒待機＋4回リトライで確実化済み）
         if already_posted_recently(config, item["posts"][0]):
             item["status"] = "posted"
             item["posted_at"] = now.strftime("%Y-%m-%d %H:%M")
