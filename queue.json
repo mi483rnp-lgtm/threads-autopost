@@ -618,10 +618,12 @@
   {
     "id": "0811-12-canva",
     "time": "2026-08-11 12:00",
-    "status": "pending",
+    "status": "posted",
     "posts": [
       "在宅ワークで「デザインなんて無理」と思ってる人へ。\n\nCanvaという無料ツールを使えば、テンプレートを選んで文字を変えるだけで、それっぽい画像が作れます。\n\nSNS投稿の画像作成は、意外と需要のある仕事です。"
-    ]
+    ],
+    "posted_at": "2026-08-11 13:11",
+    "note_dup": "skipped: already on timeline"
   },
   {
     "id": "0811-15-renraku",
